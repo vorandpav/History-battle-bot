@@ -1,17 +1,49 @@
+from typing import Literal
+
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="Mock Answer Service")
+
+ModeType = Literal["short", "detailed"]
+LevelType = Literal["easy", "academic", "exam"]
+AnswerPersonaType = Literal["stalin", "churchill"]
+SuggestionsPersonaType = Literal["stalin", "churchill", "both"]
+HistoryItemType = Literal["question", "stalin", "churchill"]
+
+
+class HistoryItem(BaseModel):
+    type: HistoryItemType
+    text: str
 
 
 class AnswerRequest(BaseModel):
     question: str
-    mode: str
-    level: str
+    history: list[HistoryItem] = Field(default_factory=list)
+    mode: ModeType
+    level: LevelType
+    persona: AnswerPersonaType
+
+
+class SuggestionsRequest(BaseModel):
+    history: list[HistoryItem] = Field(default_factory=list)
+    mode: ModeType
+    level: LevelType
+    persona: SuggestionsPersonaType
+
+
+DEFAULT_SUGGESTIONS = [
+    "Почему Сталинград считают переломом войны?",
+    "Какую роль сыграл ленд-лиз для СССР?",
+    "Почему открытие второго фронта произошло в 1944 году?",
+    "Как союзники координировали действия на разных фронтах?",
+    "Какие стратегические ошибки допустила Германия в ВМВ?",
+]
 
 
 @app.post("/answer")
 def answer(payload: AnswerRequest) -> dict:
+    print(f"[mock_answer_service:/answer] history={payload.history}")
     q = payload.question.lower()
 
     if "ленд" in q:
@@ -54,23 +86,51 @@ def answer(payload: AnswerRequest) -> dict:
             "Conclusion: compare alternatives and constraints, not only final results."
         )
 
-    return {
-        "question": payload.question,
-        "mode": payload.mode,
-        "level": payload.level,
-        "answers": {"stalin": stalin, "churchill": churchill},
-    }
+    if payload.persona == "stalin":
+        return {
+            "answer": stalin,
+        }
+    else:
+        return {
+            "answer": churchill,
+        }
 
 
-@app.post("/followups")
-def followups(payload: AnswerRequest) -> dict:
+@app.post("/suggestions")
+def suggestions(payload: SuggestionsRequest) -> dict:
+    print(f"[mock_answer_service:/suggestions] history={payload.history}")
+    if not payload.history:
+        return {
+            "suggestions": DEFAULT_SUGGESTIONS,
+        }
+
+    last_question = payload.history[-1].text.lower()
+
+    if "сталинград" in last_question:
+        items = [
+            "Какие решения командования СССР обеспечили успех операции 'Уран'?",
+            "Почему городские бои в Сталинграде оказались настолько изнурительными?",
+            "Как победа под Сталинградом повлияла на стратегию союзников?",
+            "Какие риски были у СССР, если бы операция окружения провалилась?",
+            "Как Сталинград связан с последующим сражением на Курской дуге?",
+        ]
+    elif "ленд" in last_question:
+        items = [
+            "Какие категории поставок ленд-лиза были наиболее критичны для фронта?",
+            "Как ленд-лиз влиял на скорость наступательных операций СССР?",
+            "Какие ограничения и политические условия сопровождали помощь союзников?",
+            "Что в советской экономике ленд-лиз не мог заменить?",
+            "Как по-разному оценивали вклад ленд-лиза в СССР и Великобритании?",
+        ]
+    else:
+        items = [
+            "Какие причины события можно выделить на уровне стратегии и ресурсов?",
+            "Как тема связана с действиями союзников на других фронтах?",
+            "Какие решения были альтернативными и к чему они могли привести?",
+            "Какие последствия стали заметны через 6-12 месяцев после события?",
+            "Какие источники помогут проверить разные интерпретации?",
+        ]
+
     return {
-        "question": payload.question,
-        "followups": [
-            "Какие факторы были решающими в 1942-1943 годах?",
-            "Как менялась роль логистики по мере хода войны?",
-            "Какие решения союзников усилили эффект друг друга?",
-            "Что было бы иначе при задержке второго фронта?",
-            "Какие источники стоит сравнить для проверки версии событий?",
-        ],
+        "suggestions": items,
     }

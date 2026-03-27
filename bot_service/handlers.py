@@ -1,149 +1,270 @@
-from dataclasses import dataclass
+from typing import TypeVar
 
 from aiogram import F, Router
-from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, Message
 
 from bot_service.clients import ServiceClientError, ServiceClients
+from bot_service.domain_types import (
+    LEVEL_VALUES,
+    MODE_VALUES,
+    PERSONA_VALUES,
+    Level,
+    Mode,
+    Persona,
+    PersonaAnswer,
+)
+from bot_service.keyboards import (
+    BUTTON_BEGIN,
+    BUTTON_SETTINGS,
+    BUTTON_SUGGEST,
+    main_keyboard,
+    settings_keyboard,
+    start_keyboard,
+    suggestions_keyboard,
+)
+from bot_service.state import (
+    ChatState,
+    add_history_item,
+    clear_state,
+    get_state,
+    history_as_payload,
+    set_last_suggestions,
+    update_settings,
+)
+from bot_service.texts import settings_text, welcome_text
 
 router = Router()
 
+PERSONA_ORDER = PERSONA_VALUES
+MODE_ORDER = MODE_VALUES
+LEVEL_ORDER = LEVEL_VALUES
 
-@dataclass
-class ChatState:
-    mode: str = "detailed"
-    level: str = "easy"
-    battle_enabled: bool = False
-
-
-CHAT_STATES: dict[int, ChatState] = {}
+T = TypeVar("T", bound=str)
 
 
-def _get_state(chat_id: int, default_mode: str, default_level: str) -> ChatState:
-    if chat_id not in CHAT_STATES:
-        CHAT_STATES[chat_id] = ChatState(mode=default_mode, level=default_level)
-    return CHAT_STATES[chat_id]
+def _cycle_value(current: T, values: tuple[T, ...]) -> T:
+    idx = values.index(current)
+    return values[(idx + 1) % len(values)]
 
 
-def _format_followups(items: list[str]) -> str:
-    lines = ["Что спросить дальше:"]
-    for idx, item in enumerate(items, start=1):
-        lines.append(f"{idx}. {item}")
-    return "\n".join(lines)
-
-
-def _format_battle(turns: list[dict[str, str]]) -> str:
-    lines = ["Исторический батл:"]
-    for turn in turns:
-        persona = turn.get("persona", "Персона")
-        replica = turn.get("replica", "")
-        lines.append(f"- {persona}: {replica}")
-    return "\n".join(lines)
-
-
-@router.message(Command("start"))
-async def cmd_start(message: Message, clients: ServiceClients, default_mode: str, default_level: str) -> None:
-    state = _get_state(message.chat.id, default_mode, default_level)
-    text = (
-        "Привет! Я помогу разобраться в ВМВ через формат исторического батла.\n"
-        f"Текущие настройки: mode={state.mode}, level={state.level}, battle={state.battle_enabled}.\n"
-        "Команды: /battle_on, /battle_off, /mode_detailed, /mode_short, /level_easy, /level_academic, /level_exam"
+@router.message(F.text.startswith("/start"))
+async def cmd_start(message: Message) -> None:
+    clear_state(message.chat.id)
+    await message.answer(
+        "Нажми кнопку 'Начать', чтобы открыть интерфейс бота.",
+        reply_markup=start_keyboard(),
     )
-    await message.answer(text)
 
 
-@router.message(Command("battle_on"))
-async def cmd_battle_on(message: Message, default_mode: str, default_level: str) -> None:
-    state = _get_state(message.chat.id, default_mode, default_level)
-    state.battle_enabled = True
-    await message.answer("Режим батла включен.")
+@router.message(F.text == "/reset")
+async def cmd_reset(message: Message) -> None:
+    clear_state(message.chat.id)
+    await message.answer("История чата очищена.", reply_markup=start_keyboard())
 
 
-@router.message(Command("battle_off"))
-async def cmd_battle_off(message: Message, default_mode: str, default_level: str) -> None:
-    state = _get_state(message.chat.id, default_mode, default_level)
-    state.battle_enabled = False
-    await message.answer("Режим батла выключен.")
+@router.my_chat_member()
+async def on_my_chat_member(update: ChatMemberUpdated) -> None:
+    if update.new_chat_member.status in {"kicked", "left"}:
+        clear_state(update.chat.id)
 
 
-@router.message(Command("mode_detailed"))
-async def cmd_mode_detailed(message: Message, default_mode: str, default_level: str) -> None:
-    state = _get_state(message.chat.id, default_mode, default_level)
-    state.mode = "detailed"
-    await message.answer("Режим ответа: подробно.")
+@router.message(F.text == BUTTON_BEGIN)
+async def start_flow(message: Message, default_mode: Mode, default_level: Level) -> None:
+    state = get_state(message.chat.id, default_mode, default_level)
+    await message.answer(welcome_text(state), reply_markup=main_keyboard())
 
 
-@router.message(Command("mode_short"))
-async def cmd_mode_short(message: Message, default_mode: str, default_level: str) -> None:
-    state = _get_state(message.chat.id, default_mode, default_level)
-    state.mode = "short"
-    await message.answer("Режим ответа: коротко.")
+@router.message(F.text == BUTTON_SETTINGS)
+async def open_settings(message: Message, default_mode: Mode, default_level: Level) -> None:
+    state = get_state(message.chat.id, default_mode, default_level)
+    await message.answer(settings_text(state), reply_markup=settings_keyboard(state))
 
 
-@router.message(Command("level_easy"))
-async def cmd_level_easy(message: Message, default_mode: str, default_level: str) -> None:
-    state = _get_state(message.chat.id, default_mode, default_level)
-    state.level = "easy"
-    await message.answer("Уровень объяснения: проще.")
+@router.callback_query(F.data == "settings:persona")
+async def rotate_persona(callback: CallbackQuery, default_mode: Mode, default_level: Level) -> None:
+    if not callback.message:
+        await callback.answer()
+        return
+
+    state = get_state(callback.message.chat.id, default_mode, default_level)
+    state.persona = _cycle_value(state.persona, PERSONA_ORDER)
+    update_settings(callback.message.chat.id, state)
+    await callback.message.edit_text(settings_text(state), reply_markup=settings_keyboard(state))
+    await callback.answer("Персона обновлена")
 
 
-@router.message(Command("level_academic"))
-async def cmd_level_academic(message: Message, default_mode: str, default_level: str) -> None:
-    state = _get_state(message.chat.id, default_mode, default_level)
-    state.level = "academic"
-    await message.answer("Уровень объяснения: академично.")
+@router.callback_query(F.data == "settings:mode")
+async def rotate_mode(callback: CallbackQuery, default_mode: Mode, default_level: Level) -> None:
+    if not callback.message:
+        await callback.answer()
+        return
+
+    state = get_state(callback.message.chat.id, default_mode, default_level)
+    state.mode = _cycle_value(state.mode, MODE_ORDER)
+    update_settings(callback.message.chat.id, state)
+    await callback.message.edit_text(settings_text(state), reply_markup=settings_keyboard(state))
+    await callback.answer("Режим обновлен")
 
 
-@router.message(Command("level_exam"))
-async def cmd_level_exam(message: Message, default_mode: str, default_level: str) -> None:
-    state = _get_state(message.chat.id, default_mode, default_level)
-    state.level = "exam"
-    await message.answer("Уровень объяснения: экзамен.")
+@router.callback_query(F.data == "settings:level")
+async def rotate_level(callback: CallbackQuery, default_mode: Mode, default_level: Level) -> None:
+    if not callback.message:
+        await callback.answer()
+        return
+
+    state = get_state(callback.message.chat.id, default_mode, default_level)
+    state.level = _cycle_value(state.level, LEVEL_ORDER)
+    update_settings(callback.message.chat.id, state)
+    await callback.message.edit_text(settings_text(state), reply_markup=settings_keyboard(state))
+    await callback.answer("Уровень обновлен")
+
+
+@router.message(F.text == BUTTON_SUGGEST)
+async def suggest_questions(
+        message: Message,
+        clients: ServiceClients,
+        default_mode: Mode,
+        default_level: Level,
+) -> None:
+    state = get_state(message.chat.id, default_mode, default_level)
+
+    history_payload = history_as_payload(state)
+
+    try:
+        response = await clients.get_suggestions(
+            history=history_payload,
+            mode=state.mode,
+            level=state.level,
+            persona=state.persona
+        )
+    except ServiceClientError:
+        await message.answer("Сервис предложений недоступен.")
+        return
+
+    suggestions = response.get("suggestions", [])
+    if not suggestions:
+        await message.answer("Сейчас не удалось подобрать вопросы. Попробуй позже.")
+        return
+
+    set_last_suggestions(message.chat.id, state, suggestions)
+    await message.answer("Выбери один из предложенных вопросов:", reply_markup=suggestions_keyboard(suggestions))
+
+
+@router.callback_query(F.data.startswith("ask:"))
+async def ask_from_suggestion(
+        callback: CallbackQuery,
+        clients: ServiceClients,
+        default_mode: Mode,
+        default_level: Level,
+) -> None:
+    if not callback.message:
+        await callback.answer()
+        return
+
+    state = get_state(callback.message.chat.id, default_mode, default_level)
+    idx = int(callback.data.split(":", 1)[1])
+    if idx < 0 or idx >= len(state.last_suggestions):
+        await callback.answer("Эта подсказка уже устарела", show_alert=True)
+        return
+
+    question = state.last_suggestions[idx]
+
+    await callback.answer()
+    await _send_suggestion_question(callback.message, question)
+    await _process_question(callback.message, question, clients, default_mode, default_level)
 
 
 @router.message(F.voice)
-async def handle_voice(message: Message, clients: ServiceClients, default_mode: str, default_level: str) -> None:
-    await message.answer("Эта функция сейчас недоступна")
+async def handle_voice(message: Message) -> None:
+    await message.answer("Голос пока в разработке. Отправь вопрос текстом.")
 
 
 @router.message(F.text)
-async def handle_text(message: Message, clients: ServiceClients, default_mode: str, default_level: str) -> None:
-    await _process_question(message, message.text.strip(), clients, default_mode, default_level)
+async def handle_text(
+        message: Message,
+        clients: ServiceClients,
+        default_mode: Mode,
+        default_level: Level,
+) -> None:
+    text = message.text.strip()
+    if text in {BUTTON_BEGIN, BUTTON_SUGGEST, BUTTON_SETTINGS, "/start"}:
+        return
+    await _process_question(message, text, clients, default_mode, default_level)
 
 
 async def _process_question(
         message: Message,
         question: str,
         clients: ServiceClients,
-        default_mode: str,
-        default_level: str,
+        default_mode: Mode,
+        default_level: Level,
 ) -> None:
     if not question:
-        await message.answer("Задай вопрос про события Второй мировой войны.")
+        await message.answer("Задай вопрос по теме Второй мировой войны.")
         return
 
-    state = _get_state(message.chat.id, default_mode, default_level)
-    await message.answer("Готовлю ответы Сталина и Черчилля...")
+    state = get_state(message.chat.id, default_mode, default_level)
+    add_history_item(message.chat.id, state, item_type="question", text=question)
 
+    personas_for_answers = _personas_for_answers(state.persona)
+    history_payload = history_as_payload(state)
     try:
-        answers = await clients.get_answers(question=question, mode=state.mode, level=state.level)
-        followups = await clients.get_followups(question=question, mode=state.mode, level=state.level)
-
-        stalin_text = answers["answers"]["stalin"]
-        churchill_text = answers["answers"]["churchill"]
-
-        stalin_voice = await clients.synthesize_voice(persona="stalin", text=stalin_text)
-        churchill_voice = await clients.synthesize_voice(persona="churchill", text=churchill_text)
-
-        await message.answer(f"🎙 Сталин (mock voice): {stalin_voice['voice_text']}")
-        await message.answer(f"🎙 Черчилль (mock voice): {churchill_voice['voice_text']}")
-
-        followup_text = _format_followups(followups.get("followups", []))
-        await message.answer(followup_text)
-
-        if state.battle_enabled:
-            battle = await clients.get_battle(question=question, mode=state.mode, level=state.level)
-            battle_text = _format_battle(battle.get("turns", []))
-            await message.answer(battle_text)
+        answers: dict[str, str] = {}
+        for persona in personas_for_answers:
+            response = await clients.get_answer(
+                question=question,
+                history=history_payload,
+                mode=state.mode,
+                level=state.level,
+                persona=persona,
+            )
+            answers[persona] = response.get("answer", f"Ответ {persona} недоступен")
     except ServiceClientError:
         await message.answer("Не удалось получить ответ от микросервисов. Проверь, что mock API запущены.")
+        return
+
+    for persona in personas_for_answers:
+        await _send_persona_answer(message, clients, state, persona, answers[persona])
+
+
+async def _send_suggestion_question(
+        message: Message,
+        question: str,
+) -> None:
+    await message.answer(question)
+
+
+def _personas_for_answers(persona: Persona) -> list[PersonaAnswer]:
+    if persona == "both":
+        return ["stalin", "churchill"]
+    return [persona]
+
+
+def _persona_title(persona: PersonaAnswer) -> str:
+    titles = {
+        "stalin": "Сталин",
+        "churchill": "Черчилль",
+    }
+    return titles[persona]
+
+
+async def _send_persona_answer(
+        message: Message,
+        clients: ServiceClients,
+        state: ChatState,
+        persona: PersonaAnswer,
+        answer_text: str,
+) -> None:
+    try:
+        voice_bytes = await clients.synthesize_voice(
+            persona=persona,
+            text=answer_text,
+        )
+        await message.answer_voice(
+            BufferedInputFile(voice_bytes, filename=f"{persona}.ogg"),
+            caption=_persona_title(persona),
+        )
+    except ServiceClientError:
+        await message.answer(f"{_persona_title(persona)}: {answer_text}")
+
+    add_history_item(message.chat.id, state, item_type=persona, text=answer_text)

@@ -1,20 +1,28 @@
-from fastapi import FastAPI
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="Mock Voice Service")
+app = FastAPI(title="Mock TTS Service")
+
+AUDIO_FILE = Path(__file__).with_name("mock_audio.ogg")
 
 
-class VoiceRequest(BaseModel):
+class TTSRequest(BaseModel):
     persona: str
     text: str
 
 
 @app.post("/synthesize")
-def synthesize(payload: VoiceRequest) -> dict:
-    persona_title = "Сталин" if payload.persona.lower() == "stalin" else "Черчилль"
-    return {
-        "persona": payload.persona,
-        "voice_text": f"[{persona_title}] {payload.text}",
-        "format": "mock-text",
-    }
+def synthesize(payload: TTSRequest) -> FileResponse:
+    print(f"[mock_tts_service:/synthesize] persona={payload.persona} text_len={len(payload.text)}")
 
+    if not AUDIO_FILE.exists():
+        raise HTTPException(status_code=500, detail="mock_audio.ogg not found")
+
+    return FileResponse(
+        path=AUDIO_FILE,
+        media_type="audio/ogg",
+        filename="voice.ogg",
+    )

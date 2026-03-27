@@ -1,13 +1,25 @@
+from typing import Literal
+
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="Mock Battle Service")
+
+HistoryItemType = Literal["question", "stalin", "churchill"]
+ModeType = Literal["short", "detailed"]
+LevelType = Literal["easy", "academic", "exam"]
+
+
+class HistoryItem(BaseModel):
+    type: HistoryItemType
+    text: str
 
 
 class BattleRequest(BaseModel):
     question: str
-    mode: str
-    level: str
+    history: list[HistoryItem] = Field(default_factory=list)
+    mode: ModeType
+    level: LevelType
 
 
 @app.post("/battle")
@@ -32,9 +44,5 @@ def battle(payload: BattleRequest) -> dict:
     ]
 
     return {
-        "question": payload.question,
-        "mode": payload.mode,
-        "level": payload.level,
         "turns": turns,
     }
-

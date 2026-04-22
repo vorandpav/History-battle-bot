@@ -1,9 +1,17 @@
+import os
+import json
 from typing import Literal
-
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
+from mistralai.client import Mistral
+from langchain_community.vectorstores import FAISS
+from langchain_mistralai import MistralAIEmbeddings
 
-app = FastAPI(title="Mock Answer Service")
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = FastAPI(title="RAG Answer Service")
 
 ModeType = Literal["short", "detailed"]
 LevelType = Literal["easy", "academic", "exam"]
@@ -35,102 +43,133 @@ class SuggestionsRequest(BaseModel):
 DEFAULT_SUGGESTIONS = [
     "Почему Сталинград считают переломом войны?",
     "Какую роль сыграл ленд-лиз для СССР?",
-    "Почему открытие второго фронта произошло в 1944 году?",
-    "Как союзники координировали действия на разных фронтах?",
-    "Какие стратегические ошибки допустила Германия в ВМВ?",
 ]
+
+mistral_client = None
+vectorstore = None
+
+
+@app.on_event("startup")
+def startup_event():
+    global mistral_client, vectorstore
+    api_key = os.environ.get("MISTRAL_API_KEY")
+    mistral_client = Mistral(api_key=api_key)
+
+    print("Загрузка векторной базы FAISS...")
+    try:
+        embeddings = MistralAIEmbeddings(mistral_api_key=api_key)
+        # allow_dangerous_deserialization=True нужно для FAISS в новых версиях
+        vectorstore = FAISS.load_local("vector_db", embeddings, allow_dangerous_deserialization=True)
+        print("База успешно загружена!")
+    except Exception as e:
+        print(f"ВНИМАНИЕ! База не загрузилась. Вы запускали build_index.py? Ошибка: {e}")
 
 
 @app.post("/answer")
-def answer(payload: AnswerRequest) -> dict:
-    print(f"[mock_answer_service:/answer] history={payload.history}")
-    q = payload.question.lower()
+async def answer(payload: AnswerRequest) -> dict:
+    global mistral_client, vectorstore
 
-    if "ленд" in q:
-        stalin = (
-            "Тезис: ленд-лиз усилил промышленную и транспортную устойчивость фронта. "
-            "Причины: поставки грузовиков, связи и сырья закрывали узкие места снабжения. "
-            "Контекст: ключевую нагрузку несла советская индустрия, но внешняя помощь ускоряла операции. "
-            "Вывод: вклад был важным множителем, особенно в логистике."
-        )
-        churchill = (
-            "Thesis: lend-lease helped synchronize coalition warfare at scale. "
-            "Reasons: maritime logistics and equipment transfers reduced operational delays. "
-            "Context: combined pressure across theaters constrained Axis strategy. "
-            "Conclusion: aid did not replace Soviet effort, but improved tempo and resilience."
-        )
-    elif "сталинград" in q:
-        stalin = (
-            "Тезис: Сталинград стал переломом войны на Восточном фронте. "
-            "Причины: истощение вермахта, удержание города и окружение 6-й армии. "
-            "Контекст: борьба за инициативу в 1942-1943 годах. "
-            "Вывод: после битвы СССР перешел к стратегическому наступлению."
-        )
-        churchill = (
-            "Thesis: Stalingrad was the strategic rupture in Germany's eastern campaign. "
-            "Reasons: overextended lines and catastrophic losses in a key urban battle. "
-            "Context: Allied coordination increased pressure in multiple directions. "
-            "Conclusion: the Axis lost momentum that it never fully restored."
-        )
-    else:
-        stalin = (
-            "Тезис: ключ к пониманию темы ВМВ - связь решений с ресурсами и временем. "
-            "Причины: экономика, логистика и коалиции определяли исход операций. "
-            "Контекст: фронты влияли друг на друга, а не существовали изолированно. "
-            "Вывод: анализируйте вопрос через причины, контекст и последствия."
-        )
-        churchill = (
-            "Thesis: WWII outcomes emerged from strategy, industry, and coalition discipline. "
-            "Reasons: command decisions only worked when supply and diplomacy aligned. "
-            "Context: theaters were interconnected through shipping, timing, and political commitments. "
-            "Conclusion: compare alternatives and constraints, not only final results."
-        )
+    persona_name = "Иосиф Сталин" if payload.persona == "stalin" else "Уинстон Черчилль"
+    context_text = ""
 
-    if payload.persona == "stalin":
-        return {
-            "answer": stalin,
-        }
-    else:
-        return {
-            "answer": churchill,
-        }
+    mode_instruction = "коротко и по делу" if payload.mode == "short" else "очень подробно и развернуто"
+    level_instruction = {
+        "easy": "простым и понятным языком для обывателя",
+        "academic": "академическим, исторически точным языком с терминами",
+        "exam": "структурированно, как для сдачи экзамена по истории"
+    }.get(payload.level, "понятным языком")
+
+    if vectorstore is not None:
+        try:
+            docs = vectorstore.similarity_search(
+                payload.question,
+                k=3,
+                filter={"persona": payload.persona}
+            )
+            context_text = "\n\n---\n\n".join([d.page_content for d in docs])
+            print(f"Найдено контекста: {len(context_text)} символов")
+        except Exception as e:
+            print(f"Ошибка поиска в FAISS: {e}")
+
+    system_prompt = (
+        f"Ты выступаешь от лица исторической личности: {persona_name}. "
+        f"Отвечай в УНИКАЛЬНОМ СТИЛЕ этой исторической личности. Твой ответ должен быть в режиме: {mode_instruction}."
+        f"Стиль изложения: {level_instruction}.\n\n"
+        f"ОБЯЗАТЕЛЬНО используй следующие исторические документы для ответа. "
+        f"Если в них нет прямого ответа, опирайся на исторические факты, но сохраняй образ.\n\n"
+        f"ИСТОРИЧЕСКИЕ ДОКУМЕНТЫ (hrono.info):\n{context_text}\n\n"
+        f"Не выделяй смысловые блоки, отвечай так, как будто ведешь один цельный рассказ. "
+        f"СТРОГИЙ ЗАПРЕТ: НЕ используй сценические ремарки, RP-отыгрыши и НЕ описывай свои физические действия, "
+        f"эмоции или мимику в скобках или звездочках (например, никаких [сердито смотрит] или *вздыхает*). "
+        f"НЕ пиши свое имя, роли или теги спикера в начале ответа (никаких 'Сталин:', '[Stalin]:', 'Я:'). Начинай сразу с сути.\n\n"
+    )
+
+    messages = [{"role": "system", "content": system_prompt}]
+
+    MAX_HISTORY = 8
+    recent_history = payload.history[-MAX_HISTORY:] if len(payload.history) > MAX_HISTORY else payload.history
+
+    for item in recent_history:
+        role = "user" if item.type == "question" else "assistant"
+        messages.append({"role": role, "content": item.text})
+
+    messages.append({"role": "user", "content": payload.question})
+
+    try:
+        res = await mistral_client.chat.complete_async(
+            model="mistral-small-latest",
+            messages=messages,
+            temperature=0.7
+        )
+        return {"answer": res.choices[0].message.content}
+    except Exception as e:
+        print(f"Mistral API Error: {e}")
+        return {"answer": "Архивы сейчас недоступны. Ошибка связи."}
 
 
 @app.post("/suggestions")
-def suggestions(payload: SuggestionsRequest) -> dict:
-    print(f"[mock_answer_service:/suggestions] history={payload.history}")
-    if not payload.history:
-        return {
-            "suggestions": DEFAULT_SUGGESTIONS,
-        }
+async def suggestions(payload: SuggestionsRequest) -> dict:
+    global mistral_client
 
-    last_question = payload.history[-1].text.lower()
-
-    if "сталинград" in last_question:
-        items = [
-            "Какие решения командования СССР обеспечили успех операции 'Уран'?",
-            "Почему городские бои в Сталинграде оказались настолько изнурительными?",
-            "Как победа под Сталинградом повлияла на стратегию союзников?",
-            "Какие риски были у СССР, если бы операция окружения провалилась?",
-            "Как Сталинград связан с последующим сражением на Курской дуге?",
-        ]
-    elif "ленд" in last_question:
-        items = [
-            "Какие категории поставок ленд-лиза были наиболее критичны для фронта?",
-            "Как ленд-лиз влиял на скорость наступательных операций СССР?",
-            "Какие ограничения и политические условия сопровождали помощь союзников?",
-            "Что в советской экономике ленд-лиз не мог заменить?",
-            "Как по-разному оценивали вклад ленд-лиза в СССР и Великобритании?",
-        ]
-    else:
-        items = [
-            "Какие причины события можно выделить на уровне стратегии и ресурсов?",
-            "Как тема связана с действиями союзников на других фронтах?",
-            "Какие решения были альтернативными и к чему они могли привести?",
-            "Какие последствия стали заметны через 6-12 месяцев после события?",
-            "Какие источники помогут проверить разные интерпретации?",
-        ]
-
-    return {
-        "suggestions": items,
+    persona_map = {
+        "stalin": "Иосифу Сталину",
+        "churchill": "Уинстону Черчиллю",
+        "both": "Сталину и Черчиллю (сравнение их взглядов)"
     }
+    target_persona = persona_map.get(payload.persona, "историческим лидерам")
+
+    if not payload.history:
+        history_text = "Диалог только начинается. Предложи 3 хороших стартовых вопроса."
+    else:
+        recent_history = payload.history[-4:]
+        history_lines = [f"[{h.type}]: {h.text}" for h in recent_history]
+        history_text = "Последние сообщения диалога:\n" + "\n".join(history_lines)
+
+    system_prompt = (
+        f"Ты — AI-ассистент. Твоя задача — придумать ровно 3 логичных и интересных вопроса, "
+        f"которые пользователь может задать {target_persona} для продолжения интервью.\n\n"
+        f"Уровень сложности вопросов: {payload.level}.\n\n"
+        f"{history_text}\n\n"
+        f"Верни ответ СТРОГО в формате JSON с ключом 'suggestions', содержащим массив строк.\n"
+        f"Пример: {{\"suggestions\": [\"Вопрос 1?\", \"Вопрос 2?\", \"Вопрос 3?\"]}}"
+    )
+
+    try:
+        res = await mistral_client.chat.complete_async(
+            model="mistral-small-latest",
+            messages=[{"role": "user", "content": system_prompt}],
+            temperature=0.7,
+            response_format={"type": "json_object"}
+        )
+
+        parsed = json.loads(res.choices[0].message.content)
+        suggests = parsed.get("suggestions", [])
+
+        if isinstance(suggests, list) and len(suggests) > 0:
+            return {"suggestions": suggests[:3]}
+        else:
+            return {"suggestions": DEFAULT_SUGGESTIONS}
+
+    except Exception as e:
+        print(f"Ошибка при генерации подсказок: {e}")
+        return {"suggestions": DEFAULT_SUGGESTIONS}

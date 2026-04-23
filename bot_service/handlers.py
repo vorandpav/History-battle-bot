@@ -1,7 +1,8 @@
 from typing import TypeVar
+import os
 
 from aiogram import F, Router
-from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, Message, FSInputFile
 
 from bot_service.clients import ServiceClientError, ServiceClients
 from bot_service.domain_types import (
@@ -206,6 +207,8 @@ async def _process_question(
     state = get_state(message.chat.id, default_mode, default_level)
     add_history_item(message.chat.id, state, item_type="question", text=question)
 
+    waiting_msg = await message.answer("Генерирую ответ ⏳")
+
     personas_for_answers = _personas_for_answers(state.persona)
     history_payload = history_as_payload(state)
     try:
@@ -220,11 +223,13 @@ async def _process_question(
             )
             answers[persona] = response.get("answer", f"Ответ {persona} недоступен")
     except ServiceClientError:
+        await waiting_msg.delete()
         await message.answer("Не удалось получить ответ от микросервисов. Проверь, что mock API запущены.")
         return
 
-    for persona in personas_for_answers:
-        await _send_persona_answer(message, clients, state, persona, answers[persona])
+    for i, persona in enumerate(personas_for_answers):
+        msg_to_delete = waiting_msg if i == 0 else None
+        await _send_persona_answer(message, clients, state, persona, answers[persona], msg_to_delete)
 
 
 async def _send_suggestion_question(
@@ -242,8 +247,8 @@ def _personas_for_answers(persona: Persona) -> list[PersonaAnswer]:
 
 def _persona_title(persona: PersonaAnswer) -> str:
     titles = {
-        "stalin": "Сталин",
-        "churchill": "Черчилль",
+        "stalin": "Иосиф Сталин 🎖",
+        "churchill": "Уинстон Черчилль 🎩",
     }
     return titles[persona]
 
@@ -254,17 +259,36 @@ async def _send_persona_answer(
         state: ChatState,
         persona: PersonaAnswer,
         answer_text: str,
+        waiting_msg: Message | None,
 ) -> None:
+    voice_bytes = None
     try:
         voice_bytes = await clients.synthesize_voice(
             persona=persona,
             text=answer_text,
         )
-        await message.answer_voice(
-            BufferedInputFile(voice_bytes, filename=f"{persona}.ogg"),
-            caption=_persona_title(persona),
-        )
     except ServiceClientError:
-        await message.answer(f"{_persona_title(persona)}: {answer_text}")
+        pass
+
+    if waiting_msg is not None:
+        try:
+            await waiting_msg.delete()
+        except:
+            pass
+
+    title = _persona_title(persona)
+    photo_path = f"bot_service/avatars/{persona}.jpg"
+
+    if os.path.exists(photo_path):
+        await message.answer_photo(FSInputFile(photo_path), caption=title)
+    else:
+        await message.answer(title)
+
+    if voice_bytes:
+        await message.answer_voice(
+            BufferedInputFile(voice_bytes, filename=f"{persona}.ogg")
+        )
+    else:
+        await message.answer(answer_text)
 
     add_history_item(message.chat.id, state, item_type=persona, text=answer_text)

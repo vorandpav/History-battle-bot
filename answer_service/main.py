@@ -74,7 +74,7 @@ async def answer(payload: AnswerRequest) -> dict:
     persona_name = "Иосиф Сталин" if payload.persona == "stalin" else "Уинстон Черчилль"
     context_text = ""
 
-    mode_instruction = "коротко и по делу" if payload.mode == "short" else "очень подробно и развернуто"
+    mode_instruction = "ОТВЕЧАЙ ОЧЕНЬ КРАТКО! ОТВЕТЬ СТРОГО В 1 ИЛИ 2 НЕБОЛЬШИХ ПРЕДЛОЖЕНИЯХ, НЕ БОЛЬШЕ!" if payload.mode == "short" else "ОТВЕЧАЙ ОЧЕНЬ КРАТКО! ОТВЕТЬ СТРОГО В 2 ИЛИ 3 НЕБОЛЬШИХ ПРЕДЛОЖЕНИЯХ, НЕ БОЛЬШЕ!"
     level_instruction = {
         "easy": "простым и понятным языком для обывателя",
         "academic": "академическим, исторически точным языком с терминами",
@@ -95,7 +95,8 @@ async def answer(payload: AnswerRequest) -> dict:
 
     system_prompt = (
         f"Ты выступаешь от лица исторической личности: {persona_name}. "
-        f"Отвечай в УНИКАЛЬНОМ СТИЛЕ этой исторической личности. Твой ответ должен быть в режиме: {mode_instruction}."
+        f"Отвечай в УНИКАЛЬНОМ СТИЛЕ этой исторической личности. \n\n"
+        f"РEЖИМ: {mode_instruction}\n"
         f"Стиль изложения: {level_instruction}.\n\n"
         f"ОБЯЗАТЕЛЬНО используй следующие исторические документы для ответа. "
         f"Если в них нет прямого ответа, опирайся на исторические факты, но сохраняй образ.\n\n"
@@ -115,7 +116,11 @@ async def answer(payload: AnswerRequest) -> dict:
         role = "user" if item.type == "question" else "assistant"
         messages.append({"role": role, "content": item.text})
 
-    messages.append({"role": "user", "content": payload.question})
+    user_content = payload.question
+    if payload.mode == "short":
+        user_content += "\n\n[СИСТЕМНОЕ НАПОМИНАНИЕ: ]"
+
+    messages.append({"role": "user", "content": user_content})
 
     try:
         res = await mistral_client.chat.complete_async(

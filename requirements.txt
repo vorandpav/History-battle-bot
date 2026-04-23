@@ -1,11 +1,17 @@
+# PyTorch + CUDA: pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121
+# Без индекса / без NVIDIA: можно поставить CPU torch отдельно, затем остальные строки.
 fastapi~=0.135.2
+uvicorn~=0.42.0
 pydantic~=2.12.5
 mistralai~=2.3.1
 langchain-community~=0.4.1
 langchain-mistralai~=1.1.2
 python-dotenv~=1.2.2
-torch~=2.3.1+cu121
+torch==2.3.1+cu121
+torchaudio==2.3.1+cu121
 TTS~=0.22.0
+# Coqui TTS 0.22: в transformers 4.5x+ BeamSearchScorer убран из корня; 5.x — несовместим. Держим 4.40.x.
+transformers==4.40.2
 httpx~=0.28.1
 aiogram~=3.26.0
 requests~=2.33.1

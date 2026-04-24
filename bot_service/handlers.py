@@ -209,7 +209,7 @@ async def _process_question(
 
     history_payload = history_as_payload(state)
 
-    if state.persona == "both":
+    if state.persona == "battle":
         waiting_msg = await message.answer("⚔️ Начинаем исторические дебаты...")
         try:
             response = await clients.get_battle(
@@ -229,19 +229,22 @@ async def _process_question(
 
         return
 
-    try:
-        waiting_msg = await message.answer("Генерирую ответ ⏳")
-        response = await clients.get_answer(
-            question=question,
-            history=history_payload,
-            mode=state.mode,
-            level=state.level,
-            persona=state.persona,
-        )
-        answer_text = response.get("answer", f"Ответ {state.persona} недоступен")
-        await _send_persona_answer(message, clients, state, state.persona, answer_text, waiting_msg)
-    except ServiceClientError:
-        await message.answer("Не удалось получить ответ от микросервисов.")
+    personas_to_ask = _personas_for_answers(state.persona)
+
+    for p in personas_to_ask:
+        try:
+            waiting_msg = await message.answer("Генерирую ответ ⏳")
+            response = await clients.get_answer(
+                question=question,
+                history=history_payload,
+                mode=state.mode,
+                level=state.level,
+                persona=p,
+            )
+            answer_text = response.get("answer", f"Ответ {p} недоступен")
+            await _send_persona_answer(message, clients, state, p, answer_text, waiting_msg)
+        except ServiceClientError:
+            await message.answer("Не удалось получить ответ от микросервисов.")
 
 
 async def _send_suggestion_question(

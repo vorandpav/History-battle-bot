@@ -1,7 +1,0 @@
-# Кэш моделей Coqui / Hugging Face (сотни МБ – ГБ), не коммитить
-.cache/
-
-.venv/
-__pycache__/
-*.py[cod]
-data/

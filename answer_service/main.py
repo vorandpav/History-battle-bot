@@ -17,7 +17,7 @@ app = FastAPI(title="RAG Answer Service")
 ModeType = Literal["short", "detailed"]
 LevelType = Literal["easy", "academic", "exam"]
 AnswerPersonaType = Literal["stalin", "churchill"]
-SuggestionsPersonaType = Literal["stalin", "churchill", "both"]
+SuggestionsPersonaType = Literal["stalin", "churchill", "both", "battle"]
 HistoryItemType = Literal["question", "stalin", "churchill"]
 
 
@@ -124,14 +124,12 @@ async def answer(payload: AnswerRequest) -> dict:
         messages.append({"role": role, "content": item.text})
 
     user_content = payload.question
-    if payload.mode == "short":
-        user_content += "\n\n[СИСТЕМНОЕ НАПОМИНАНИЕ: ]"
 
     messages.append({"role": "user", "content": user_content})
 
     try:
         res = await mistral_client.chat.complete_async(
-            model="mistral-small-latest",
+            model="mistral-medium-latest",
             messages=messages,
             temperature=0.7
         )
@@ -199,7 +197,7 @@ async def battle(payload: BattleRequest) -> dict:
 
         try:
             res = await mistral_client.chat.complete_async(
-                model="mistral-small-latest",
+                model="mistral-medium-latest",
                 messages=messages,
                 temperature=0.8
             )
@@ -232,7 +230,8 @@ async def suggestions(payload: SuggestionsRequest) -> dict:
     persona_map = {
         "stalin": "Иосифу Сталину",
         "churchill": "Уинстону Черчиллю",
-        "both": "Сталину и Черчиллю одновременно (сравнение их взглядов)"
+        "both": "Сталину и Черчиллю (отдельные ответы)",
+        "battle": "Сталину и Черчиллю (для исторических дебатов)"
     }
     target_persona = persona_map.get(payload.persona, "историческим лидерам")
 
@@ -254,7 +253,7 @@ async def suggestions(payload: SuggestionsRequest) -> dict:
 
     try:
         res = await mistral_client.chat.complete_async(
-            model="mistral-small-latest",
+            model="mistral-medium-latest",
             messages=[{"role": "user", "content": system_prompt}],
             temperature=0.7,
             response_format={"type": "json_object"}

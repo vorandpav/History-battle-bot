@@ -34,6 +34,13 @@ class AnswerRequest(BaseModel):
     persona: AnswerPersonaType
 
 
+class BattleRequest(BaseModel):
+    question: str
+    history: list[HistoryItem] = Field(default_factory=list)
+    mode: ModeType
+    level: LevelType
+
+
 class SuggestionsRequest(BaseModel):
     history: list[HistoryItem] = Field(default_factory=list)
     mode: ModeType
@@ -134,6 +141,90 @@ async def answer(payload: AnswerRequest) -> dict:
         return {"answer": "Архивы сейчас недоступны. Ошибка связи."}
 
 
+@app.post("/battle")
+async def battle(payload: BattleRequest) -> dict:
+    global mistral_client, vectorstore
+
+    turns = []
+    speakers = ["stalin", "churchill", "stalin", "churchill"]
+
+    level_instruction = {
+        "easy": "эмоционально и простыми словами",
+        "academic": "оперируя историческими фактами и строгим тоном",
+        "exam": "четко аргументируя свою позицию"
+    }.get(payload.level, "уверенно и жестко")
+
+    dialogue_history = []
+
+    for current_speaker in speakers:
+        persona_name = "Иосиф Сталин" if current_speaker == "stalin" else "Уинстон Черчилль"
+        opponent_name = "Уинстон Черчилль" if current_speaker == "stalin" else "Иосиф Сталин"
+
+        context_text = ""
+
+        if vectorstore is not None:
+            try:
+                search_query = payload.question
+                if dialogue_history:
+                    search_query += f" {dialogue_history[-1]}"
+
+                docs = vectorstore.similarity_search(
+                    search_query, k=2, filter={"persona": current_speaker}
+                )
+                context_text = "\n\n---\n\n".join([d.page_content for d in docs])
+            except Exception as e:
+                print(f"Ошибка поиска FAISS: {e}")
+
+        system_prompt = (
+            f"Ты — {persona_name}. Ты участвуешь в дебатах.\n"
+            f"Твой оппонент — {opponent_name}. Тема дебатов: «{payload.question}».\n\n"
+            f"ТВОЯ ЗАДАЧА:\n"
+            f"Ответить на аргумент оппонента, разгромить его позицию и отстоять свою. "
+            f"Говори {level_instruction}. Стиль: {payload.mode}.\n\n"
+            f"СТРОГИЕ ЗАПРЕТЫ:\n"
+            f"1. НЕ пиши свое имя в начале ответа.\n"
+            f"2. НЕ используй сценические ремарки.\n"
+            f"3. Отвечай КРАТКО, одной емкой репликой (не более 3-4 предложений).\n\n"
+            f"ИСТОРИЧЕСКАЯ СПРАВКА:\n{context_text}"
+        )
+
+        messages = [{"role": "system", "content": system_prompt}]
+
+        for i, past_replica in enumerate(dialogue_history):
+            role = "assistant" if (i % 2 == len(dialogue_history) % 2) else "user"
+            messages.append({"role": role, "content": past_replica})
+
+        if not dialogue_history:
+            messages.append({"role": "user", "content": f"Начни дебаты на тему: {payload.question}."})
+
+        try:
+            res = await mistral_client.chat.complete_async(
+                model="mistral-small-latest",
+                messages=messages,
+                temperature=0.8
+            )
+            answer_text = res.choices[0].message.content.strip()
+
+            for prefix in ["Сталин:", "Черчилль:", "[Stalin]:", "[Churchill]:"]:
+                if answer_text.startswith(prefix):
+                    answer_text = answer_text[len(prefix):].strip()
+
+            dialogue_history.append(answer_text)
+
+            turns.append({
+                "persona": "Сталин" if current_speaker == "stalin" else "Черчилль",
+                "replica": answer_text
+            })
+
+        except Exception as e:
+            turns.append({
+                "persona": "Сталин" if current_speaker == "stalin" else "Черчилль",
+                "replica": "Связь оборвалась. Дебаты приостановлены."
+            })
+
+    return {"turns": turns}
+
+
 @app.post("/suggestions")
 async def suggestions(payload: SuggestionsRequest) -> dict:
     global mistral_client
@@ -141,7 +232,7 @@ async def suggestions(payload: SuggestionsRequest) -> dict:
     persona_map = {
         "stalin": "Иосифу Сталину",
         "churchill": "Уинстону Черчиллю",
-        "both": "Сталину и Черчиллю (сравнение их взглядов)"
+        "both": "Сталину и Черчиллю одновременно (сравнение их взглядов)"
     }
     target_persona = persona_map.get(payload.persona, "историческим лидерам")
 

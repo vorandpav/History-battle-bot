@@ -207,29 +207,41 @@ async def _process_question(
     state = get_state(message.chat.id, default_mode, default_level)
     add_history_item(message.chat.id, state, item_type="question", text=question)
 
-    waiting_msg = await message.answer("Генерирую ответ ⏳")
-
-    personas_for_answers = _personas_for_answers(state.persona)
     history_payload = history_as_payload(state)
-    try:
-        answers: dict[str, str] = {}
-        for persona in personas_for_answers:
-            response = await clients.get_answer(
+
+    if state.persona == "both":
+        waiting_msg = await message.answer("⚔️ Начинаем исторические дебаты...")
+        try:
+            response = await clients.get_battle(
                 question=question,
                 history=history_payload,
                 mode=state.mode,
                 level=state.level,
-                persona=persona,
             )
-            answers[persona] = response.get("answer", f"Ответ {persona} недоступен")
-    except ServiceClientError:
-        await waiting_msg.delete()
-        await message.answer("Не удалось получить ответ от микросервисов. Проверь, что mock API запущены.")
+            turns = response.get("turns", [])
+
+            for turn in turns:
+                speaker_id = "stalin" if turn["persona"] == "Сталин" else "churchill"
+                await _send_persona_answer(message, clients, state, speaker_id, turn["replica"], waiting_msg)
+
+        except ServiceClientError:
+            await message.answer("Не удалось получить дебаты от сервиса баттла.")
+
         return
 
-    for i, persona in enumerate(personas_for_answers):
-        msg_to_delete = waiting_msg if i == 0 else None
-        await _send_persona_answer(message, clients, state, persona, answers[persona], msg_to_delete)
+    try:
+        waiting_msg = await message.answer("Генерирую ответ ⏳")
+        response = await clients.get_answer(
+            question=question,
+            history=history_payload,
+            mode=state.mode,
+            level=state.level,
+            persona=state.persona,
+        )
+        answer_text = response.get("answer", f"Ответ {state.persona} недоступен")
+        await _send_persona_answer(message, clients, state, state.persona, answer_text, waiting_msg)
+    except ServiceClientError:
+        await message.answer("Не удалось получить ответ от микросервисов.")
 
 
 async def _send_suggestion_question(

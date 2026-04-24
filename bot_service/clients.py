@@ -73,7 +73,7 @@ class ServiceClients:
             level: Level,
     ) -> dict[str, Any]:
         payload = {"question": question, "history": history, "mode": mode, "level": level}
-        return await self._post_json(f"{self._battle_base}/battle", payload)
+        return await self._post_json(f"{self._answer_base}/battle", payload)
 
     async def _post_json(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         try:

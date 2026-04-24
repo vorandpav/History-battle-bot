@@ -11,7 +11,7 @@ embeddings = MistralAIEmbeddings(mistral_api_key=api_key)
 print("Загружаем базу...")
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-db_path = os.path.join(current_dir, "../..", "vector_db")
+db_path = os.path.join(os.path.dirname(current_dir), "vector_db")
 vectorstore = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
 
 # ТЕСТОВЫЕ ВОПРОСЫ

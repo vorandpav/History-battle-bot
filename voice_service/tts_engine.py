@@ -48,7 +48,7 @@ class VoiceManager:
         base_dir = Path(__file__).resolve().parent
 
         self.speakers = {
-            "stalin": base_dir / "speakers" / "stalin.wav",
+            "stalin": base_dir / "speakers" / "stalin_1.mp3",
             "churchill": base_dir / "speakers" / "churchill.wav",
         }
         raw = os.getenv("VOICE_TIME_STRETCH_RATE", "1.4").strip().replace(",", ".")

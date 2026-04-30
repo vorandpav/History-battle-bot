@@ -17,6 +17,7 @@ async def main() -> None:
         answer_service_url=settings.answer_service_url,
         voice_service_url=settings.voice_service_url,
         battle_service_url=settings.battle_service_url,
+        timeout_seconds=120.0,
     )
 
     dp.include_router(router)
